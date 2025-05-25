@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  sillytavern-kobold:
+    build: .
+    container_name: sillytavern-kobold
+    hostname: sillytavern-kobold
+    environment:
+      - NODE_ENV=production
+      - FORCE_COLOR=1
+      - CUDA_VISIBLE_DEVICES=0
+    ports:
+      - "8000:8000"  # SillyTavern
+      - "5001:5001"  # KoboldCPP
+    volumes:
+      - "./data:/app/SillyTavern/data"
+      - "./config:/app/SillyTavern/config"
+      - "./plugins:/app/SillyTavern/plugins"
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    runtime: nvidia

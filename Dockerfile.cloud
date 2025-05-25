@@ -1,0 +1,114 @@
+# Simplified Dockerfile for cloud deployment (simplepod.ai)
+FROM nvidia/cuda:12.1-runtime-ubuntu22.04
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV NODE_VERSION=20.x
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    git \
+    ca-certificates \
+    gnupg \
+    dos2unix \
+    tini \
+    python3.12 \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js 20.x
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install PyTorch with CUDA support
+RUN pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Create app directory
+WORKDIR /app
+
+# Copy SillyTavern files
+COPY SillyTavern/ ./SillyTavern/
+
+# Set working directory to SillyTavern
+WORKDIR /app/SillyTavern
+
+# Install SillyTavern dependencies
+RUN npm install --no-audit --no-fund --loglevel=error --no-progress --omit=dev
+
+# Create necessary directories and copy config
+RUN mkdir -p config data plugins && \
+    cp default/config.yaml config/config.yaml
+
+# Make KoboldCPP executable
+RUN chmod +x koboldcpp
+
+# Create optimized startup script for cloud
+RUN cat > /app/start-cloud.sh << 'EOF'
+#!/bin/bash
+set -e
+
+echo "=== SillyTavern + KoboldCPP Cloud Deployment ==="
+echo "Starting services..."
+
+# Function to handle shutdown
+cleanup() {
+    echo "Shutting down services..."
+    pkill -f koboldcpp || true
+    pkill -f "node server.js" || true
+    exit 0
+}
+
+# Set up signal handlers
+trap cleanup SIGTERM SIGINT EXIT
+
+# Change to SillyTavern directory
+cd /app/SillyTavern
+
+# Start KoboldCPP in background
+echo "Starting KoboldCPP on port 5001..."
+./koboldcpp \
+    --host 0.0.0.0 \
+    --port 5001 \
+    --model mythomax-l2-13b.Q8_0.gguf \
+    --contextsize 4096 \
+    --threads 4 \
+    --usecublas \
+    --quiet &
+
+# Wait for KoboldCPP to start
+echo "Waiting for KoboldCPP to initialize..."
+sleep 15
+
+# Check if KoboldCPP is running
+if ! pgrep -f koboldcpp > /dev/null; then
+    echo "ERROR: KoboldCPP failed to start"
+    exit 1
+fi
+
+echo "KoboldCPP started successfully"
+
+# Start SillyTavern
+echo "Starting SillyTavern on port 8000..."
+echo "Access SillyTavern at: http://your-cloud-url:8000"
+echo "KoboldCPP API at: http://your-cloud-url:5001"
+
+# Run SillyTavern in foreground
+exec node server.js --listen
+EOF
+
+# Make startup script executable
+RUN chmod +x /app/start-cloud.sh
+
+# Expose ports
+EXPOSE 8000 5001
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8000 || exit 1
+
+# Use tini as init system and start services
+ENTRYPOINT ["tini", "--"]
+CMD ["/app/start-cloud.sh"]
